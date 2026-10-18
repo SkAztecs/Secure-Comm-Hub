@@ -24,6 +24,10 @@ Threading:
     - GUI -> network : asyncio.run_coroutine_threadsafe(...)
     - network -> GUI : events go into a queue.Queue; the GUI checks it every 100 ms.
 
+Phase 2: the login screen asks for the account password and the key passphrase,
+TLS is on by default (needs certs/ca.pem), the header shows the SAFETY NUMBER of
+the open conversation, and "Trust changed key" accepts a peer's new identity key.
+
 Run:
     python -m client.gui_client --host 127.0.0.1 --port 9000
 """
@@ -38,6 +42,8 @@ from datetime import datetime
 from tkinter import messagebox, scrolledtext
 
 from client.client_core import ChatClient
+from client.identity import Identity, IdentityError, KnownPeers
+from common import tls
 
 
 def timestamp() -> str:
@@ -74,17 +80,31 @@ class ChatWindow:
         self.login_frame = tk.Frame(self.root, padx=20, pady=20)
         self.login_frame.pack()
 
-        tk.Label(self.login_frame, text="Username").grid(row=0, column=0, sticky="w")
-        self.name_entry = tk.Entry(self.login_frame, width=25)
-        self.name_entry.grid(row=0, column=1, pady=4)
-
-        tk.Label(self.login_frame, text="Server").grid(row=1, column=0, sticky="w")
-        self.server_entry = tk.Entry(self.login_frame, width=25)
+        rows = [("Username", "name_entry", ""),
+                ("Account password", "password_entry", "*"),
+                ("Key passphrase", "passphrase_entry", "*"),
+                ("Server", "server_entry", ""),
+                ("CA certificate", "ca_entry", "")]
+        for row, (label, attribute, show) in enumerate(rows):
+            tk.Label(self.login_frame, text=label).grid(row=row, column=0, sticky="w")
+            entry = tk.Entry(self.login_frame, width=28, show=show)
+            entry.grid(row=row, column=1, pady=3)
+            setattr(self, attribute, entry)
         self.server_entry.insert(0, f"{self.host}:{self.port}")
-        self.server_entry.grid(row=1, column=1, pady=4)
+        self.ca_entry.insert(0, "certs/ca.pem")
+
+        self.register_var = tk.BooleanVar(value=False)
+        self.tls_var = tk.BooleanVar(value=True)
+        self.insecure_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(self.login_frame, text="Create new account (register)",
+                       variable=self.register_var).grid(row=5, column=0, columnspan=2, sticky="w")
+        tk.Checkbutton(self.login_frame, text="Use TLS 1.3 (untick only for the attack demo)",
+                       variable=self.tls_var).grid(row=6, column=0, columnspan=2, sticky="w")
+        tk.Checkbutton(self.login_frame, text="INSECURE demo mode (no signatures / integrity)",
+                       variable=self.insecure_var, fg="red").grid(row=7, column=0, columnspan=2, sticky="w")
 
         tk.Button(self.login_frame, text="Connect", command=self.on_connect).grid(
-            row=2, column=0, columnspan=2, pady=8)
+            row=8, column=0, columnspan=2, pady=8)
         self.name_entry.bind("<Return>", lambda e: self.on_connect())
         self.name_entry.focus()
 
@@ -107,6 +127,8 @@ class ChatWindow:
         self.new_peer_entry.bind("<Return>", lambda e: self.on_start_chat())
         tk.Button(left, text="Start encrypted chat", command=self.on_start_chat).pack(fill="x", pady=4)
         tk.Button(left, text="Who's online", command=self.on_who).pack(fill="x")
+        tk.Button(left, text="Show safety number", command=self.on_safety).pack(fill="x", pady=(12, 0))
+        tk.Button(left, text="Trust changed key...", command=self.on_trust).pack(fill="x", pady=4)
 
         # ---------- right column: the selected conversation ----------
         right = tk.Frame(self.root, padx=8, pady=8)
@@ -179,11 +201,14 @@ class ChatWindow:
         for line in self.histories[peer]:
             self.write_to_history_box(line)
 
-        session = self.client.sessions.get(peer)
-        fingerprint = session.fingerprint() if session else "?"
-        self.lock_label.config(
-            text=f"\U0001F512 Encrypted session with {peer}  (AES-256-GCM, fingerprint {fingerprint})",
-            fg="green")
+        if self.client.insecure:
+            self.lock_label.config(text=f"INSECURE DEMO session with {peer} - identity NOT verified",
+                                   fg="red")
+        else:
+            number = self.client.safety_number(peer) or "?"
+            self.lock_label.config(
+                text=f"\U0001F512 Encrypted with {peer} (AES-256-GCM)   Safety number: {number}",
+                fg="green")
         self.send_button.config(text=f"Send to {peer}", state="normal")
         self.refresh_peer_list()
         self.message_entry.focus()
@@ -216,21 +241,46 @@ class ChatWindow:
     # ==================================================================
     def on_connect(self):
         name = self.name_entry.get().strip()
+        password = self.password_entry.get()
+        passphrase = self.passphrase_entry.get()
         host, _, port = self.server_entry.get().strip().partition(":")
-        if not name:
-            messagebox.showerror("Error", "Enter a username")
+        if not name or not password or not passphrase:
+            messagebox.showerror("Error", "Enter username, account password and key passphrase")
             return
+
+        # 1. Unlock (or create) the identity key. It never leaves this machine.
+        if not Identity.exists(name) and not self.register_var.get():
+            messagebox.showerror(
+                "Error", f"No identity key for '{name}' on this machine.\n"
+                         f"First time? Tick 'Create new account (register)'.")
+            return
+        try:
+            identity = Identity.load_or_create(name, passphrase)
+        except IdentityError as error:
+            messagebox.showerror("Error", str(error))
+            return
+
+        # 2. TLS context (or none for the demo).
+        ssl_context = None
+        if self.tls_var.get():
+            try:
+                ssl_context = tls.client_context(self.ca_entry.get().strip())
+            except (OSError, ValueError) as error:
+                messagebox.showerror("Error", f"Cannot load CA certificate: {error}")
+                return
 
         # Callbacks run in the NETWORK thread -> they only put events in the queue.
         self.client = ChatClient(
-            name,
+            name, identity, KnownPeers(name), insecure=self.insecure_var.get(),
             on_message=lambda peer, text: self.events.put(("message", peer, text)),
             on_info=lambda text: self.events.put(("info", text)),
             on_session=lambda peer: self.events.put(("incoming_session", peer)),
         )
+        register = self.register_var.get()
 
         async def connect():
-            await self.client.connect(host, int(port or 9000))
+            await self.client.connect(host, int(port or 9000), password,
+                                      register=register, ssl_context=ssl_context)
             self.events.put(("connected",))
 
         self.run_async(connect())
@@ -251,6 +301,26 @@ class ChatWindow:
         selection = self.peer_list.curselection()
         if selection:
             self.open_conversation(self.peer_order[selection[0]])
+
+    def on_safety(self):
+        if self.active_peer is None:
+            return
+        number = self.client.safety_number(self.active_peer)
+        messagebox.showinfo(
+            "Safety number",
+            f"Safety number with {self.active_peer}:\n\n{number}\n\n"
+            f"Ask {self.active_peer} to open theirs. If the numbers match, "
+            f"nobody is in the middle.")
+
+    def on_trust(self):
+        peer = self.new_peer_entry.get().strip() or self.active_peer
+        if not peer:
+            messagebox.showinfo("Trust", "Type the user's name in 'Start new chat with' first.")
+            return
+        if self.client.trust_new_key(peer):
+            messagebox.showinfo("Trust", f"New identity key for {peer} saved. Start the chat again.")
+        else:
+            messagebox.showinfo("Trust", f"No changed key is pending for {peer}.")
 
     def on_who(self):
         self.run_async(self.client.ask_who())

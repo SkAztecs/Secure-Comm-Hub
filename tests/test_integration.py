@@ -5,14 +5,12 @@ Also checks that the server only ever relays ciphertext.
 
 import asyncio
 
-from client.client_core import ChatClient
-from server.relay_server import RelayServer
+from tests.helpers import connect, make_client, start_relay
 
 
-def test_alice_and_bob_chat_through_relay():
+def test_alice_and_bob_chat_through_relay(tmp_path):
     async def scenario():
-        relay = RelayServer("127.0.0.1", 0)  # port 0 = pick any free port
-        await relay.start()
+        relay = await start_relay(str(tmp_path))
 
         # Spy on everything the server forwards.
         forwarded = []
@@ -23,15 +21,11 @@ def test_alice_and_bob_chat_through_relay():
             await original_route(sender, envelope)
         relay.route = spy_route
 
-        bob_inbox = asyncio.Queue()
-        alice_inbox = asyncio.Queue()
-        alice = ChatClient("alice", on_message=lambda p, t: alice_inbox.put_nowait((p, t)),
-                           on_info=lambda t: None)
-        bob = ChatClient("bob", on_message=lambda p, t: bob_inbox.put_nowait((p, t)),
-                         on_info=lambda t: None)
-
-        await alice.connect("127.0.0.1", relay.port)
-        await bob.connect("127.0.0.1", relay.port)
+        bob_inbox, alice_inbox = asyncio.Queue(), asyncio.Queue()
+        alice = make_client(str(tmp_path), "alice", alice_inbox)
+        bob = make_client(str(tmp_path), "bob", bob_inbox)
+        await connect(alice, relay)
+        await connect(bob, relay)
 
         await alice.start_chat("bob")
         await alice.send_chat("bob", "top secret plan")
@@ -40,15 +34,19 @@ def test_alice_and_bob_chat_through_relay():
         await bob.send_chat("alice", "roger that")
         got_alice = await asyncio.wait_for(alice_inbox.get(), 5)
 
+        # Both sides compute the same safety number.
+        same_number = alice.safety_number("bob") == bob.safety_number("alice")
+
         await alice.close()
         await bob.close()
         await relay.stop()
-        return got_bob, got_alice, forwarded
+        return got_bob, got_alice, forwarded, same_number
 
-    got_bob, got_alice, forwarded = asyncio.run(scenario())
+    got_bob, got_alice, forwarded, same_number = asyncio.run(scenario())
 
     assert got_bob == ("alice", "top secret plan")
     assert got_alice == ("bob", "roger that")
+    assert same_number
 
     # The plaintext must never appear in anything the server handled.
     everything_server_saw = str(forwarded)
@@ -57,13 +55,12 @@ def test_alice_and_bob_chat_through_relay():
     assert any(e["type"] == "CHAT" and "packet" in e for e in forwarded)
 
 
-def test_message_to_offline_user_gives_error():
+def test_message_to_offline_user_gives_error(tmp_path):
     async def scenario():
-        relay = RelayServer("127.0.0.1", 0)
-        await relay.start()
+        relay = await start_relay(str(tmp_path))
         infos = []
-        alice = ChatClient("alice", on_message=lambda p, t: None, on_info=infos.append)
-        await alice.connect("127.0.0.1", relay.port)
+        alice = make_client(str(tmp_path), "alice", infos=infos)
+        await connect(alice, relay)
         try:
             await alice.start_chat("ghost")
             failed = False

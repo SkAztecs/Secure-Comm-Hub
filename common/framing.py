@@ -32,6 +32,10 @@ class FrameError(Exception):
     """Raised when a frame is too large or the connection closes mid-frame."""
 
 
+class FrameTooLarge(FrameError):
+    """A frame bigger than MAX_FRAME_SIZE - logged as FRAME_TOO_LARGE."""
+
+
 async def send_frame(writer: asyncio.StreamWriter, data: bytes) -> None:
     """Send one message (bytes) with a 4-byte length in front of it."""
     if len(data) > MAX_FRAME_SIZE:
@@ -61,7 +65,7 @@ async def recv_frame(reader: asyncio.StreamReader) -> bytes:
 
     # Step 2: refuse giant frames BEFORE reading them (protects memory).
     if length > MAX_FRAME_SIZE:
-        raise FrameError(f"FRAME_TOO_LARGE: {length} bytes")
+        raise FrameTooLarge(f"FRAME_TOO_LARGE: {length} bytes")
 
     try:
         # Step 3: read exactly `length` bytes.

@@ -10,6 +10,8 @@ venv/
 *.pem
 *.key
 keys/
+certs/
+data/
 *.db
 *.sqlite3
 

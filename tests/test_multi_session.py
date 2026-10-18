@@ -13,43 +13,36 @@ These tests check:
 
 import argparse
 import asyncio
+import os
 
 from client.cli_client import CliChat
-from client.client_core import ChatClient
-from server.relay_server import RelayServer
+from client.identity import Identity
+from tests.helpers import PASSPHRASE, PASSWORD, connect, make_client, nothing_arrives, start_relay
 
 
-async def start_three_users():
-    relay = RelayServer("127.0.0.1", 0)
-    await relay.start()
+async def start_three_users(tmp):
+    relay = await start_relay(tmp)
 
     inboxes = {"bob": asyncio.Queue(), "dhinakar": asyncio.Queue()}
-    bob = ChatClient("bob", on_message=lambda p, t: inboxes["bob"].put_nowait((p, t)),
-                     on_info=lambda t: None)
-    dhina = ChatClient("dhinakar", on_message=lambda p, t: inboxes["dhinakar"].put_nowait((p, t)),
-                       on_info=lambda t: None)
+    bob = make_client(tmp, "bob", inboxes["bob"])
+    dhina = make_client(tmp, "dhinakar", inboxes["dhinakar"])
 
     # alice uses the real CLI logic (without a keyboard).
-    args = argparse.Namespace(name="alice", host="127.0.0.1", port=relay.port)
-    alice_cli = CliChat(args)
+    keys_dir = os.path.join(tmp, "keys")
+    args = argparse.Namespace(name="alice", host="127.0.0.1", port=relay.port,
+                              keys_dir=keys_dir, log_dir=tmp, insecure=False, register=True)
+    alice_cli = CliChat(args, Identity.load_or_create("alice", PASSPHRASE, keys_dir),
+                        PASSWORD, None)
 
-    await alice_cli.client.connect("127.0.0.1", relay.port)
-    await bob.connect("127.0.0.1", relay.port)
-    await dhina.connect("127.0.0.1", relay.port)
+    await alice_cli.client.connect("127.0.0.1", relay.port, PASSWORD, register=True)
+    await connect(bob, relay)
+    await connect(dhina, relay)
     return relay, alice_cli, bob, dhina, inboxes
 
 
-async def nothing_arrives(queue, seconds=0.3):
-    try:
-        await asyncio.wait_for(queue.get(), seconds)
-        return False
-    except asyncio.TimeoutError:
-        return True
-
-
-def test_sessions_are_separate_and_messages_go_to_the_right_peer():
+def test_sessions_are_separate_and_messages_go_to_the_right_peer(tmp_path):
     async def scenario():
-        relay, alice_cli, bob, dhina, inboxes = await start_three_users()
+        relay, alice_cli, bob, dhina, inboxes = await start_three_users(str(tmp_path))
 
         # bob starts a session with alice -> it becomes alice's active chat
         await bob.start_chat("alice")
@@ -90,9 +83,9 @@ def test_sessions_are_separate_and_messages_go_to_the_right_peer():
     asyncio.run(scenario())
 
 
-def test_switch_to_unknown_peer_is_refused():
+def test_switch_to_unknown_peer_is_refused(tmp_path):
     async def scenario():
-        relay, alice_cli, bob, dhina, inboxes = await start_three_users()
+        relay, alice_cli, bob, dhina, inboxes = await start_three_users(str(tmp_path))
         await bob.start_chat("alice")
         await asyncio.sleep(0.1)
         await alice_cli.handle_line("/switch nobody")

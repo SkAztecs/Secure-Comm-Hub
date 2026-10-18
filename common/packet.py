@@ -23,6 +23,8 @@ HEADER_FORMAT = ">BBQ"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)  # = 10 bytes
 
 MIN_PACKET_SIZE = HEADER_SIZE + crypto_utils.NONCE_SIZE + crypto_utils.TAG_SIZE
+# Insecure demo packets (AES-CTR) have no 16-byte tag.
+MIN_INSECURE_PACKET_SIZE = HEADER_SIZE + crypto_utils.NONCE_SIZE
 
 
 class PacketError(Exception):
@@ -34,23 +36,28 @@ def build_header(msg_type: int, seq: int) -> bytes:
     return struct.pack(HEADER_FORMAT, PROTOCOL_VERSION, msg_type, seq)
 
 
-def build_packet(msg_type: int, seq: int, key: bytes, plaintext: bytes) -> bytes:
+def build_packet(msg_type: int, seq: int, key: bytes, plaintext: bytes,
+                 insecure: bool = False) -> bytes:
     """
     Encrypt `plaintext` and return the full packet bytes.
         header + nonce + (ciphertext + tag)
+    insecure=True is ONLY for the attack demo: AES-CTR, no tag, no integrity.
     """
     header = build_header(msg_type, seq)
     nonce = crypto_utils.nonce_from_seq(seq)
+    if insecure:
+        return header + nonce + crypto_utils.encrypt_ctr_insecure(key, seq, plaintext)
     ciphertext_and_tag = crypto_utils.encrypt(key, seq, header, plaintext)
     return header + nonce + ciphertext_and_tag
 
 
-def parse_packet(packet: bytes):
+def parse_packet(packet: bytes, insecure: bool = False):
     """
     Split a packet into its parts WITHOUT decrypting.
     Returns a dict: version, type, seq, nonce, header, ciphertext (incl. tag).
     """
-    if len(packet) < MIN_PACKET_SIZE:
+    minimum = MIN_INSECURE_PACKET_SIZE if insecure else MIN_PACKET_SIZE
+    if len(packet) < minimum:
         raise PacketError(f"Packet too short: {len(packet)} bytes")
 
     header = packet[:HEADER_SIZE]
@@ -79,11 +86,15 @@ def parse_packet(packet: bytes):
     }
 
 
-def open_packet(key: bytes, packet: bytes):
+def open_packet(key: bytes, packet: bytes, insecure: bool = False):
     """
     Parse + decrypt. Returns (msg_type, seq, plaintext).
     Raises PacketError (bad format) or cryptography.exceptions.InvalidTag (tampered).
     """
-    parts = parse_packet(packet)
+    parts = parse_packet(packet, insecure)
+    if insecure:
+        # Demo only: no tag, so tampering is NOT detected.
+        plaintext = crypto_utils.decrypt_ctr_insecure(key, parts["seq"], parts["ciphertext"])
+        return parts["type"], parts["seq"], plaintext
     plaintext = crypto_utils.decrypt(key, parts["seq"], parts["header"], parts["ciphertext"])
     return parts["type"], parts["seq"], plaintext

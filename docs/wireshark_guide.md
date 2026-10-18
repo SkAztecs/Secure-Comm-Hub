@@ -31,6 +31,13 @@ Run the server on laptop 1 with `--host 0.0.0.0`, clients on laptops 2 and 3 wit
 | 3 | Follow TCP Stream showing the base64 `packet` | Server only routes ciphertext |
 | 4 | Server log lines `ROUTE KEY_INIT / KEY_RESP / CHAT` | Server routes, never decrypts |
 
-## Honest note for the viva
-In Phase 1 the routing envelope (usernames, message type) is visible on the wire.
-Phase 2 wraps each hop in **TLS 1.3**, which hides that metadata too.
+## Phase 2: TLS on vs off
+
+| Capture | What Wireshark shows |
+|---|---|
+| Server + clients with `--no-tls` | JSON envelopes: usernames, `"password": "..."` in HELLO, base64 `packet` (still unreadable) |
+| Normal run (TLS 1.3) | Only `TLSv1.3 Application Data` records. No usernames, no password, no JSON |
+
+Take both screenshots side by side. They show the two layers working together:
+- **TLS** protects the metadata and the login.
+- **End-to-end AES-GCM** protects the message content, even from the server.
