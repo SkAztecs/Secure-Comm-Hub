@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+.pytest_cache/
+
+# Secrets and local data - NEVER commit these
+.env
+*.pem
+*.key
+keys/
+*.db
+*.sqlite3
+
+# Logs and captures
+logs/
+*.log
+*.pcap
+*.pcapng
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
