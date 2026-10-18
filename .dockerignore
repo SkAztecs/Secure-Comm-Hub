@@ -1,0 +1,14 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+# never bake secrets or user data into an image
+certs/
+keys/
+data/
+logs/
+downloads/
+.env
+benchmarks/results/

@@ -39,7 +39,7 @@ import queue
 import threading
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext
 
 from client.client_core import ChatClient
 from client.identity import Identity, IdentityError, KnownPeers
@@ -149,6 +149,7 @@ class ChatWindow:
         # The Send button always names the receiver.
         self.send_button = tk.Button(bottom, text="Send", command=self.on_send, state="disabled")
         self.send_button.pack(side="left", padx=4)
+        tk.Button(bottom, text="Send file...", command=self.on_send_file).pack(side="left")
 
         # Status line for system messages (connections, errors).
         self.status_label = tk.Label(right, text="", fg="gray", anchor="w")
@@ -206,8 +207,10 @@ class ChatWindow:
                                    fg="red")
         else:
             number = self.client.safety_number(peer) or "?"
+            session = self.client.sessions.get(peer)
+            pq = "post-quantum hybrid" if session and "ML-KEM" in (session.suite or "") else "classic X25519"
             self.lock_label.config(
-                text=f"\U0001F512 Encrypted with {peer} (AES-256-GCM)   Safety number: {number}",
+                text=f"\U0001F512 {peer}: {pq} + Double Ratchet   Safety number: {number}",
                 fg="green")
         self.send_button.config(text=f"Send to {peer}", state="normal")
         self.refresh_peer_list()
@@ -302,6 +305,17 @@ class ChatWindow:
         if selection:
             self.open_conversation(self.peer_order[selection[0]])
 
+    def on_send_file(self):
+        if self.active_peer is None:
+            self.set_status("Open a conversation first")
+            return
+        path = filedialog.askopenfilename(title=f"Send a file to {self.active_peer}")
+        if not path:
+            return
+        peer = self.active_peer
+        self.add_line(peer, f"* sending file {path.replace(chr(92), '/').split('/')[-1]} ...")
+        self.run_async(self.client.send_file(peer, path))
+
     def on_safety(self):
         if self.active_peer is None:
             return
@@ -357,6 +371,10 @@ class ChatWindow:
 
             elif kind == "info":
                 self.set_status(event[1])
+                # Show received files inside that person's conversation too.
+                if event[1].startswith("Received file from "):
+                    sender = event[1].split()[3].rstrip(":")
+                    self.add_line(sender, "* " + event[1])
 
             elif kind == "session_ready":
                 # WE started this session -> open it straight away.

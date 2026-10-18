@@ -47,10 +47,10 @@ def test_safety_number_is_symmetric_and_formatted():
 def test_signature_covers_names():
     identity_key, identity_pub = crypto_utils.generate_identity_keypair()
     eph = os.urandom(32)
-    sig = crypto_utils.sign(identity_key, init_transcript("alice", "bob", eph))
-    assert crypto_utils.verify_signature(identity_pub, sig, init_transcript("alice", "bob", eph))
+    sig = crypto_utils.sign(identity_key, init_transcript("alice", "bob", {"pub": eph}))
+    assert crypto_utils.verify_signature(identity_pub, sig, init_transcript("alice", "bob", {"pub": eph}))
     # Same signature can't be reused for a different responder.
-    assert not crypto_utils.verify_signature(identity_pub, sig, init_transcript("alice", "carol", eph))
+    assert not crypto_utils.verify_signature(identity_pub, sig, init_transcript("alice", "carol", {"pub": eph}))
 
 
 def test_known_peers_tofu(tmp_path):
@@ -136,16 +136,23 @@ def test_chat_over_tls_and_plain_client_is_rejected(tmp_path):
         got = await asyncio.wait_for(inbox.get(), 5)
 
         # A client that does not speak TLS can't log in.
+        # (Linux closes the refused connection; Windows RESETS it - both are OSErrors.)
         plain = make_client(str(tmp_path), "carol")
         try:
             await asyncio.wait_for(connect(plain, relay), 5)
             plain_ok = True
-        except (ConnectionError, asyncio.TimeoutError):
+        except (OSError, asyncio.TimeoutError):
             plain_ok = False
 
         for c in (alice, bob, plain):
-            await c.close()
-        await relay.stop()
+            try:
+                await c.close()
+            except OSError:
+                pass
+        try:
+            await relay.stop()
+        except OSError:
+            pass
         return got, tls_version, plain_ok
 
     got, version, plain_ok = asyncio.run(scenario())
@@ -209,7 +216,7 @@ def test_automatic_rekey_keeps_chat_working(tmp_path):
         await connect(alice, relay)
         await connect(bob, relay)
         await alice.start_chat("bob")
-        first_keys = alice.sessions["bob"].send_key
+        first_session = alice.sessions["bob"]
 
         Session.MAX_MESSAGES = 3
         try:
@@ -218,12 +225,12 @@ def test_automatic_rekey_keeps_chat_working(tmp_path):
             received = [(await asyncio.wait_for(inbox.get(), 5))[1] for _ in range(7)]
         finally:
             Session.MAX_MESSAGES = 1000
-        new_keys = alice.sessions["bob"].send_key
+        new_session = alice.sessions["bob"]
 
         await alice.close()
         await bob.close()
         await relay.stop()
-        return received, first_keys != new_keys
+        return received, first_session is not new_session
 
     received, changed = asyncio.run(scenario())
     assert received == [f"m{i}" for i in range(7)]

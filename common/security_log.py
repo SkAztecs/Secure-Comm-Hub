@@ -36,6 +36,8 @@ EVENTS = {
     "TAG_FAIL": "high",              # AES-GCM tag mismatch -> tampering
     "REPLAY_OR_REORDER": "high",     # wrong sequence number -> replay
     "SESSION_CLOSED_TAG_FAILS": "high",
+    "FILE_TRANSFER_FAIL": "medium",  # incomplete file or SHA-256 mismatch
+    # (MALFORMED_FRAME is also written by clients for undecodable messages)
 }
 
 

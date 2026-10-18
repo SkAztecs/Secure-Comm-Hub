@@ -122,11 +122,10 @@ def test_truncated_packet_rejected():
 
 
 # ---------------------------------------------------------------- sessions
-def make_session_pair():
-    alice = Session("bob", is_initiator=True)
-    bob = Session("alice", is_initiator=False)
-    bob.complete(alice.my_public)
-    alice.complete(bob.my_public)
+def make_session_pair(pq=True):
+    alice = Session("bob", is_initiator=True, pq=pq)
+    bob = Session("alice", is_initiator=False, pq=pq)
+    alice.finish(bob.respond(alice.init_fields()))
     return alice, bob
 
 
@@ -153,7 +152,7 @@ def test_seq_increments():
     alice, bob = make_session_pair()
     for i in range(3):
         bob.decrypt_message(alice.encrypt_message(f"m{i}"))
-    assert alice.send_seq == 3 and bob.recv_seq == 3
+    assert alice.send_seq == 3 and bob.ratchet.recv_n == 3
 
 
 def test_send_before_handshake_fails():

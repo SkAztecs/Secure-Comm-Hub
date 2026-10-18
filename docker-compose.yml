@@ -1,0 +1,67 @@
+# Relay server + two chat clients, one command.
+#
+#   docker compose up -d relay            # creates the certificate, starts the server
+#   docker compose run --rm alice         # terminal 2 (interactive)
+#   docker compose run --rm bob           # terminal 3 (interactive)
+#
+# First run of each client: add --register, e.g.
+#   docker compose run --rm alice --register
+#
+# Data lives in named volumes, so accounts and keys survive restarts.
+# Reset everything:  docker compose down -v
+
+services:
+  # Runs once: creates the CA + server certificate in the shared "certs" volume.
+  certs:
+    build: .
+    user: root
+    command: >
+      sh -c "test -f /app/certs/server.pem ||
+             (python scripts/make_certs.py --dns relay --out /app/certs && chown -R chat:chat /app/certs)"
+    volumes:
+      - certs:/app/certs
+
+  relay:
+    build: .
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    ports:
+      - "9000:9000"       # also reachable from the host / other laptops
+    volumes:
+      - certs:/app/certs
+      - server-data:/app/data
+      - server-logs:/app/logs
+
+  alice:
+    build: .
+    profiles: ["clients"]   # not started by "up"; use "docker compose run"
+    entrypoint: ["python", "-m", "client.cli_client", "--name", "alice", "--host", "relay", "--port", "9000"]
+    stdin_open: true
+    tty: true
+    depends_on: [relay]
+    volumes:
+      - certs:/app/certs:ro
+      - alice-keys:/app/keys
+      - alice-downloads:/app/downloads
+
+  bob:
+    build: .
+    profiles: ["clients"]
+    entrypoint: ["python", "-m", "client.cli_client", "--name", "bob", "--host", "relay", "--port", "9000"]
+    stdin_open: true
+    tty: true
+    depends_on: [relay]
+    volumes:
+      - certs:/app/certs:ro
+      - bob-keys:/app/keys
+      - bob-downloads:/app/downloads
+
+volumes:
+  certs:
+  server-data:
+  server-logs:
+  alice-keys:
+  alice-downloads:
+  bob-keys:
+  bob-downloads:

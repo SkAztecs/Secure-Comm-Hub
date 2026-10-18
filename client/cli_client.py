@@ -25,6 +25,7 @@ Commands:
     /sessions         list your sessions (* = active)
     /safety bob       show the safety number for bob (compare it with bob in person)
     /trust bob        accept bob's CHANGED identity key (only after checking the number!)
+    /send bob <path>  send a file, end-to-end encrypted (saved in downloads/bob/ on his side)
     @dhinakar hi      send ONE message to dhinakar without switching
     /who              list online users
     /quit             exit
@@ -63,7 +64,7 @@ class CliChat:
         self.active_peer = None
         self.client = ChatClient(
             args.name, identity, KnownPeers(args.name, args.keys_dir),
-            insecure=args.insecure,
+            insecure=args.insecure, pq=not getattr(args, "no_pq", False),
             on_message=self.show_message, on_info=self.show_info, on_session=self.new_session,
             security_log=SecurityLogger(os.path.join(args.log_dir, f"security-{args.name}.jsonl")))
 
@@ -113,15 +114,26 @@ class CliChat:
         await self.client.send_chat(peer, text)
         print(f"[{timestamp()}] me -> {peer}: {text}")
 
+    HELP = ("Commands: /chat <user>, /switch <user>, /sessions, /safety [user], /trust <user>, "
+            "/send <user> <file>, @<user> <msg>, /who, /help, /quit")
+
     async def handle_line(self, line: str) -> bool:
         """Process one typed line. Returns False when the user wants to quit."""
-        if line == "/quit":
+        # Split "/chat bob" into command "/chat" and argument "bob" (argument may be empty).
+        command, _, argument = line.partition(" ")
+        argument = argument.strip()
+        is_command = line.startswith("/")
+
+        if command == "/quit":
             return False
 
-        if line == "/who":
+        if command == "/help":
+            self.show_info(self.HELP)
+
+        elif command == "/who":
             await self.client.ask_who()
 
-        elif line == "/sessions":
+        elif command == "/sessions":
             ready = [p for p, s in self.client.sessions.items() if s.ready]
             if not ready:
                 self.show_info("No sessions yet. Use /chat <user>.")
@@ -129,36 +141,53 @@ class CliChat:
                 mark = "*" if peer == self.active_peer else " "
                 print(f"  {mark} {peer}   {self.client.describe_trust(peer)}")
 
-        elif line.startswith("/safety "):
-            peer = line.split(maxsplit=1)[1].strip()
-            number = self.client.safety_number(peer)
-            if number:
-                self.show_info(f"Safety number with {peer}: {number}")
+        elif command == "/safety":
+            # "/safety" alone = the active chat
+            peer = argument or self.active_peer
+            if not peer:
+                self.show_info("Usage: /safety <user>   (or open a chat first)")
+            elif self.client.safety_number(peer):
+                self.show_info(f"Safety number with {peer}: {self.client.safety_number(peer)}")
                 self.show_info(f"Ask {peer} to run /safety {self.args.name} - the numbers must match.")
             else:
                 self.show_info(f"No verified session with {peer}.")
 
-        elif line.startswith("/trust "):
-            peer = line.split(maxsplit=1)[1].strip()
-            if self.client.trust_new_key(peer):
-                self.show_info(f"New identity key for {peer} saved. Run /chat {peer} again.")
+        elif command == "/trust":
+            # Deliberately NO default here: trusting a changed key must name the person.
+            if not argument:
+                self.show_info("Usage: /trust <user>   (only after checking the safety number with them)")
+            elif self.client.trust_new_key(argument):
+                self.show_info(f"New identity key for {argument} saved. Run /chat {argument} again.")
             else:
-                self.show_info(f"No changed key pending for {peer}.")
+                self.show_info(f"No changed key pending for {argument}.")
 
-        elif line.startswith("/chat "):
-            peer = line.split(maxsplit=1)[1].strip()
-            await self.client.start_chat(peer)
-            self.active_peer = peer
-            self.show_info(f"Active chat is now {peer}")
-
-        elif line.startswith("/switch "):
-            peer = line.split(maxsplit=1)[1].strip()
-            session = self.client.sessions.get(peer)
-            if session is None or not session.ready:
-                self.show_info(f"No session with {peer}. Use /chat {peer} first.")
+        elif command == "/send":
+            peer, _, path = argument.partition(" ")
+            path = path.strip().strip('"').strip("'")
+            if not peer or not path:
+                self.show_info("Usage: /send <user> <path to file>   e.g. /send bob C:\\Users\\me\\notes.pdf")
             else:
-                self.active_peer = peer
-                self.show_info(f"Active chat is now {peer}")
+                if peer not in self.client.sessions:
+                    await self.client.start_chat(peer)
+                await self.client.send_file(peer, path)
+
+        elif command == "/chat":
+            if not argument:
+                self.show_info("Usage: /chat <user>")
+            else:
+                await self.client.start_chat(argument)
+                self.active_peer = argument
+                self.show_info(f"Active chat is now {argument}")
+
+        elif command == "/switch":
+            session = self.client.sessions.get(argument)
+            if not argument:
+                self.show_info("Usage: /switch <user>")
+            elif session is None or not session.ready:
+                self.show_info(f"No session with {argument}. Use /chat {argument} first.")
+            else:
+                self.active_peer = argument
+                self.show_info(f"Active chat is now {argument}")
 
         elif line.startswith("@"):
             # "@dhinakar hello there" -> peer = dhinakar, text = hello there
@@ -168,8 +197,8 @@ class CliChat:
             else:
                 await self.send_to(target, text.strip())
 
-        elif line.startswith("/"):
-            self.show_info("Unknown command. Try /chat, /switch, /sessions, /safety, /trust, /who, /quit")
+        elif is_command:
+            self.show_info(f"Unknown command {command}. " + self.HELP)
 
         elif self.active_peer is None:
             self.show_info("No active chat. Use /chat <user> first.")
@@ -183,8 +212,7 @@ class CliChat:
         await self.client.connect(self.args.host, self.args.port, self.password,
                                   register=self.args.register, ssl_context=self.ssl_context)
         self.password = None  # don't keep it in memory longer than needed
-        print("Commands: /chat <user>, /switch <user>, /sessions, /safety <user>, "
-              "/trust <user>, @<user> <msg>, /who, /quit")
+        print(self.HELP)
 
         while True:
             line = (await self.read_line()).strip()
@@ -210,6 +238,8 @@ def build_parser():
     parser.add_argument("--log-dir", default="logs", help="where security logs are written")
     parser.add_argument("--no-tls", action="store_true", help="DEMO ONLY: plain TCP")
     parser.add_argument("--insecure", action="store_true", help="DEMO ONLY: disable Phase 2 checks")
+    parser.add_argument("--no-pq", action="store_true",
+                        help="classic X25519 only (no ML-KEM post-quantum hybrid)")
     # For scripted demos/tests only - typing secrets on the command line leaves them
     # in your shell history, so normally leave these out and get prompted.
     parser.add_argument("--password", help=argparse.SUPPRESS)

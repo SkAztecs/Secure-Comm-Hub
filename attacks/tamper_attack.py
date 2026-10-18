@@ -19,8 +19,10 @@ Then send exactly:  pay 100 to bob
 from attacks.proxy_base import RED, AttackProxy, common_args, run, say
 from common.envelope import b64decode, b64encode
 
-# Ciphertext starts after header (10 bytes) + nonce (12 bytes).
-CIPHERTEXT_OFFSET = 22
+# Where the ciphertext starts inside a packet, by protocol version:
+#   v1 (--insecure demo): header 10 + nonce 12           = 22
+#   v2 (Double Ratchet):  ver 1 + type 1 + ratchet hdr 40 = 42
+CIPHERTEXT_OFFSET = {1: 22, 2: 42}
 
 
 class TamperProxy(AttackProxy):
@@ -35,7 +37,7 @@ class TamperProxy(AttackProxy):
     async def on_client_frame(self, conn, envelope):
         if envelope.get("type") == "CHAT":
             packet = bytearray(b64decode(envelope["packet"]))
-            index = CIPHERTEXT_OFFSET + self.position
+            index = CIPHERTEXT_OFFSET.get(packet[0], 22) + self.position
             if index < len(packet):
                 packet[index] ^= self.xor_value
                 envelope["packet"] = b64encode(bytes(packet))

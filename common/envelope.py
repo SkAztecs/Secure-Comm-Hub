@@ -51,7 +51,7 @@ def parse_envelope(data: bytes) -> dict:
     """JSON bytes -> dict. Checks that the basic fields exist."""
     try:
         envelope = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise EnvelopeError("MALFORMED_FRAME: not valid JSON")
 
     if not isinstance(envelope, dict) or "type" not in envelope:

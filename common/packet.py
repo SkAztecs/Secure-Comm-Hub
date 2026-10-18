@@ -98,3 +98,49 @@ def open_packet(key: bytes, packet: bytes, insecure: bool = False):
         return parts["type"], parts["seq"], plaintext
     plaintext = crypto_utils.decrypt(key, parts["seq"], parts["header"], parts["ciphertext"])
     return parts["type"], parts["seq"], plaintext
+
+
+# ===========================================================================
+# PHASE 3: version 2 packets (Double Ratchet)
+# ===========================================================================
+#
+#    +-----+------+------------------+------+------+----------------------+------+
+#    | ver | type | ratchet pub key  |  pn  |  n   |      ciphertext      | tag  |
+#    | 1 B | 1 B  |      32 B        | 4 B  | 4 B  |      variable        | 16 B |
+#    +-----+------+------------------+------+------+----------------------+------+
+#    |-------------- 42-byte header = AES-GCM AAD --------------|
+#
+# No nonce field: every message has its OWN key, and the nonce is derived from it.
+
+from common.message_types import RATCHET_PROTOCOL_VERSION
+
+V2_PREFIX_FORMAT = ">BB"                     # ver, type
+V2_PREFIX_SIZE = struct.calcsize(V2_PREFIX_FORMAT)
+V2_HEADER_SIZE = V2_PREFIX_SIZE + 40         # + dh(32) + pn(4) + n(4) = 42
+V2_MIN_SIZE = V2_HEADER_SIZE + crypto_utils.TAG_SIZE
+
+
+def packet_version(packet: bytes) -> int:
+    if not packet:
+        raise PacketError("Empty packet")
+    return packet[0]
+
+
+def build_ratchet_packet(msg_type: int, ratchet, plaintext: bytes) -> bytes:
+    """Encrypt with the next message key of the Double Ratchet."""
+    prefix = struct.pack(V2_PREFIX_FORMAT, RATCHET_PROTOCOL_VERSION, msg_type)
+    ratchet_header, ciphertext = ratchet.encrypt(plaintext, prefix)
+    return prefix + ratchet_header + ciphertext
+
+
+def open_ratchet_packet(ratchet, packet: bytes):
+    """Returns (msg_type, plaintext). Raises PacketError / InvalidTag / RatchetError."""
+    if len(packet) < V2_MIN_SIZE:
+        raise PacketError(f"Packet too short: {len(packet)} bytes")
+    version, msg_type = struct.unpack(V2_PREFIX_FORMAT, packet[:V2_PREFIX_SIZE])
+    if version != RATCHET_PROTOCOL_VERSION:
+        raise PacketError(f"Expected a v2 packet, got version {version}")
+    prefix = packet[:V2_PREFIX_SIZE]
+    ratchet_header = packet[V2_PREFIX_SIZE:V2_HEADER_SIZE]
+    plaintext = ratchet.decrypt(ratchet_header, packet[V2_HEADER_SIZE:], prefix)
+    return msg_type, plaintext

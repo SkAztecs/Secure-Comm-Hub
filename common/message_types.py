@@ -8,7 +8,8 @@ Every file imports from here so a code is never typed twice.
 """
 
 # Protocol version. Goes into byte 0 of every encrypted packet.
-PROTOCOL_VERSION = 0x01
+PROTOCOL_VERSION = 0x01          # v1: one AES key per direction (used by --insecure demo mode)
+RATCHET_PROTOCOL_VERSION = 0x02  # v2: Double Ratchet, a new key for every message (Phase 3)
 
 # ---- Message type codes (1 byte each) ----
 HELLO = 0x01        # client -> server : "my name is alice"

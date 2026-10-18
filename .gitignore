@@ -17,6 +17,7 @@ data/
 
 # Logs and captures
 logs/
+downloads/
 *.log
 *.pcap
 *.pcapng
@@ -26,3 +27,4 @@ logs/
 Thumbs.db
 .vscode/
 .idea/
+benchmarks/results/

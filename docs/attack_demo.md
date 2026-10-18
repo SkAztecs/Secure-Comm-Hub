@@ -38,6 +38,10 @@ Restart T1 and T2 between runs (Ctrl+C, then start them again with the new `RUN`
 
 ## Attack 1: man-in-the-middle on the key exchange
 
+Since Phase 3, the proxy copies the **whole** handshake: X25519, ML-KEM-768 and the
+Double Ratchet. Post-quantum crypto alone does not stop a man-in-the-middle; only
+the signatures and identity checks do. That's a good point to make in the viva.
+
 `python -m attacks.mitm_proxy --listen 9100 --server-port 9000`
 
 | Run | What to do | What you see |

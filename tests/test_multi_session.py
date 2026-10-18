@@ -56,7 +56,7 @@ def test_sessions_are_separate_and_messages_go_to_the_right_peer(tmp_path):
 
         # Two sessions, two different key sets.
         sessions = alice_cli.client.sessions
-        assert sessions["bob"].send_key != sessions["dhinakar"].send_key
+        assert sessions["bob"].ratchet.root_key != sessions["dhinakar"].ratchet.root_key
 
         # 1) "@dhinakar hi dhina" goes ONLY to dhinakar
         await alice_cli.handle_line("@dhinakar hi dhina")
@@ -95,3 +95,25 @@ def test_switch_to_unknown_peer_is_refused(tmp_path):
         await relay.stop()
 
     asyncio.run(scenario())
+
+
+def test_bare_commands_use_active_chat_or_show_usage(tmp_path, capsys):
+    """'/safety' alone = active chat; '/chat' alone = usage, not 'Unknown command'."""
+    async def scenario():
+        relay, alice_cli, bob, dhina, inboxes = await start_three_users(str(tmp_path))
+        await bob.start_chat("alice")
+        await asyncio.sleep(0.1)
+        for line in ("/safety", "/chat", "/send bob", "/trust", "/switch", "/nonsense"):
+            await alice_cli.handle_line(line)
+        for c in (alice_cli.client, bob, dhina):
+            await c.close()
+        await relay.stop()
+        return alice_cli.client.safety_number("bob")
+
+    number = asyncio.run(scenario())
+    out = capsys.readouterr().out
+    assert f"Safety number with bob: {number}" in out
+    assert "Usage: /chat <user>" in out
+    assert "Usage: /send <user> <path to file>" in out and "C:\\Users\\me\\notes.pdf" in out
+    assert "Usage: /trust <user>" in out and "Usage: /switch <user>" in out
+    assert "Unknown command /nonsense" in out

@@ -247,3 +247,71 @@ def encrypt_ctr_insecure(key: bytes, seq: int, plaintext: bytes) -> bytes:
 def decrypt_ctr_insecure(key: bytes, seq: int, ciphertext: bytes) -> bytes:
     decryptor = _ctr_cipher(key, seq).decryptor()
     return decryptor.update(ciphertext) + decryptor.finalize()
+
+
+# ===========================================================================
+# PHASE 3 ADDITIONS
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 7. ML-KEM-768 (post-quantum key encapsulation, FIPS 203)
+# ---------------------------------------------------------------------------
+# A future large quantum computer could break X25519 (Shor's algorithm).
+# An attacker can RECORD our traffic today and decrypt it later
+# ("harvest now, decrypt later"). ML-KEM is designed to resist quantum attacks.
+#
+# We use a HYBRID: X25519 AND ML-KEM-768 together. The session key depends on
+# BOTH secrets, so an attacker must break both. This is the same idea as
+# Signal's PQXDH and Chrome's X25519MLKEM768.
+#
+# How a KEM works (different from Diffie-Hellman):
+#   1. Alice makes a key pair and sends her PUBLIC key (1184 bytes).
+#   2. Bob "encapsulates": gets (shared_secret, ciphertext) and sends the ciphertext (1088 bytes).
+#   3. Alice "decapsulates" the ciphertext with her PRIVATE key -> same shared_secret (32 bytes).
+
+try:
+    from cryptography.hazmat.primitives.asymmetric.mlkem import (
+        MLKEM768PrivateKey,
+        MLKEM768PublicKey,
+    )
+    HAS_MLKEM = True
+except ImportError:          # cryptography older than 47.0
+    HAS_MLKEM = False
+
+
+def generate_mlkem_keypair():
+    """Returns (private_key_object, public_bytes[1184])."""
+    private_key = MLKEM768PrivateKey.generate()
+    return private_key, private_key.public_key().public_bytes_raw()
+
+
+def mlkem_encapsulate(public_bytes: bytes):
+    """Returns (shared_secret[32], ciphertext[1088])."""
+    return MLKEM768PublicKey.from_public_bytes(public_bytes).encapsulate()
+
+
+def mlkem_decapsulate(private_key, ciphertext: bytes) -> bytes:
+    """Returns the same 32-byte shared secret the encapsulating side got."""
+    return private_key.decapsulate(ciphertext)
+
+
+# ---------------------------------------------------------------------------
+# 8. Root key for the Double Ratchet
+# ---------------------------------------------------------------------------
+HKDF_INFO_V2 = b"p1-chat-v2"
+
+
+def derive_root_material(x25519_shared: bytes, pq_shared: bytes,
+                         initiator_pub: bytes, responder_pub: bytes):
+    """
+    Combine the handshake secrets into the Double Ratchet's starting values.
+        ikm  = x25519_shared || pq_shared      (pq_shared is b"" in classic mode)
+        okm  = HKDF-SHA256(ikm, salt = SHA256(sorted ephemeral keys), info, 64 bytes)
+        root_key           = okm[0:32]    -> starts the ratchet
+        responder_chain    = okm[32:64]   -> lets the responder send before it has ratcheted
+    """
+    first, second = sorted([initiator_pub, responder_pub])
+    salt = hashlib.sha256(first + second).digest()
+    okm = HKDF(algorithm=hashes.SHA256(), length=64, salt=salt,
+               info=HKDF_INFO_V2).derive(x25519_shared + pq_shared)
+    return okm[:32], okm[32:]
